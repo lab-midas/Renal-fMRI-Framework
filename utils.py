@@ -1,7 +1,9 @@
-import  tensorflow as tf
-import os, logging
-from wandb.integration.keras import WandbCallback
+import logging
+import os
+
+import tensorflow as tf
 from tensorflow.keras.callbacks import ReduceLROnPlateau, CSVLogger
+from wandb.integration.keras import WandbCallback
 
 
 def setup_TF_environment(gpus_available):
@@ -54,7 +56,7 @@ def get_callbacks(csvPath, checkpoint_dir):
                                 patience=10,
                                 verbose=1),
                  CSVLogger(csvPath),
-                 WandbCallback(),
+                 WandbCallback(save_model=False,log_model=True, log_graph=True),
                  CustomCheckpointCallback(ckptPath, save_every_epochs=10)
     ]
     return callbacks
@@ -107,7 +109,7 @@ def get_callbacks_save_best(csvPath, checkpoint_dir):
                                 patience=10,
                                 verbose=1),
                  CSVLogger(csvPath),
-                 WandbCallback(),
-                 CustomCheckpointCallbackSaveBest(ckptPath, save_every_epochs=10)
+                 WandbCallback(save_model=False, log_model=True, log_graph=True),
+                 CustomCheckpointCallbackSaveBest(ckptPath, save_every_epochs=50)
     ]
     return callbacks

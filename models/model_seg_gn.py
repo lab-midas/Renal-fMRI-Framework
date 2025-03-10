@@ -5,13 +5,12 @@
 
 import tensorflow as tf
 from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import Conv2D, Dense, UpSampling2D, Softmax
 from tensorflow.keras.layers import Concatenate, Activation
-from tensorflow.keras.layers import Flatten 
+from tensorflow.keras.layers import Conv2D, Dense, UpSampling2D, Softmax
+from tensorflow.keras.layers import Flatten
 from tensorflow.keras.layers import MaxPooling2D
-from tensorflow_addons.layers import  GroupNormalization 
- 
- 
+from tensorflow_addons.layers import GroupNormalization
+
 
 class modelObj:
     def __init__(self, cfg, kernel_init=None):

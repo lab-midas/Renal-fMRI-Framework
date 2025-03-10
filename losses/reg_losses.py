@@ -1,15 +1,172 @@
 # core python
-import sys
-import warnings
 
+import neurite as ne
 # third party
 import numpy as np
-import neurite as ne
 import tensorflow as tf
 import tensorflow.keras.backend as K
 
 
 class Grad:
+    """
+    N-D gradient loss.
+    loss_mult can be used to scale the loss value - this is recommended if
+    the gradient is computed on a downsampled vector field (where loss_mult
+    is equal to the downsample factor).
+    """
+
+    def __init__(self, penalty='l1', loss_mult=None, vox_weight=None):
+        self.penalty = penalty
+        self.loss_mult = loss_mult
+        self.vox_weight = vox_weight
+
+    def _diffs(self, y):
+        vol_shape = y.get_shape().as_list()[1:-1]
+        ndims = len(vol_shape)
+
+        df = [None] * ndims
+        for i in range(ndims):
+            d = i + 1
+            # permute dimensions to put the ith dimension first
+            r = [d, *range(d), *range(d + 1, ndims + 2)]
+            yp = K.permute_dimensions(y, r)
+            dfi = yp[1:, ...] - yp[:-1, ...]
+
+            if self.vox_weight is not None:
+                w = K.permute_dimensions(self.vox_weight, r)
+                # TODO: Need to add square root, since for non-0/1 weights this is bad.
+                dfi = w[1:, ...] * dfi
+
+            # permute back
+            # note: this might not be necessary for this loss specifically,
+            # since the results are just summed over anyway.
+            r = [*range(1, d + 1), 0, *range(d + 1, ndims + 2)]
+            df[i] = K.permute_dimensions(dfi, r)
+
+        return df
+
+    def loss_bd(self, img, y_pred):
+        """
+        returns Tensor of size [bs]
+        """
+
+        if self.penalty == 'l1':
+            dif = [tf.abs(f) for f in self._diffs(y_pred)]
+        else:
+            assert self.penalty == 'l2', 'penalty can only be l1 or l2. Got: %s' % self.penalty
+            dif = [f * f for f in self._diffs(y_pred)]
+
+        img_dif = [tf.abs(f) for f in self._diffs(img)]
+        weights = [tf.exp(-tf.reduce_mean(tf.abs(im), axis=1, keepdims=True) * 10) for im in img_dif] # pixels=10
+        dif = [weights[i] * dif[i] for i in range(len(dif))]
+
+        df = [tf.reduce_mean(K.batch_flatten(f), axis=-1) for f in dif]
+        grad = tf.add_n(df) / len(df)
+
+        if self.loss_mult is not None:
+            grad *= self.loss_mult
+
+        return grad
+
+    def loss(self, _, y_pred):
+        """
+        returns Tensor of size [bs]
+        """
+
+        if self.penalty == 'l1':
+            dif = [tf.abs(f) for f in self._diffs(y_pred)]
+        else:
+            assert self.penalty == 'l2', 'penalty can only be l1 or l2. Got: %s' % self.penalty
+            dif = [f * f for f in self._diffs(y_pred)]
+
+        df = [tf.reduce_mean(K.batch_flatten(f), axis=-1) for f in dif]
+        grad = tf.add_n(df) / len(df)
+
+        if self.loss_mult is not None:
+            grad *= self.loss_mult
+
+        return grad
+
+    def mean_loss(self, y_true, y_pred):
+        """
+        returns Tensor of size ()
+        """
+
+        return K.mean(self.loss(y_true, y_pred))
+
+
+class GradReshape:
+    """
+    N-D gradient loss.
+    loss_mult can be used to scale the loss value - this is recommended if
+    the gradient is computed on a downsampled vector field (where loss_mult
+    is equal to the downsample factor).
+    """
+
+    def __init__(self, penalty='l1', loss_mult=None, vox_weight=None):
+        self.penalty = penalty
+        self.loss_mult = loss_mult
+        self.vox_weight = vox_weight
+
+    def _diffs(self, y):
+        vol_shape = y.get_shape().as_list()[1:-1]
+        ndims = len(vol_shape)
+
+        df = [None] * ndims
+        for i in range(ndims):
+            d = i + 1
+            # permute dimensions to put the ith dimension first
+            r = [d, *range(d), *range(d + 1, ndims + 2)]
+            yp = K.permute_dimensions(y, r)
+            dfi = yp[1:, ...] - yp[:-1, ...]
+
+            if self.vox_weight is not None:
+                w = K.permute_dimensions(self.vox_weight, r)
+                # TODO: Need to add square root, since for non-0/1 weights this is bad.
+                dfi = w[1:, ...] * dfi
+
+            # permute back
+            # note: this might not be necessary for this loss specifically,
+            # since the results are just summed over anyway.
+            r = [*range(1, d + 1), 0, *range(d + 1, ndims + 2)]
+            df[i] = K.permute_dimensions(dfi, r)
+
+        return df
+
+    def loss(self, _, y_pred):
+        """
+        returns Tensor of size [bs]
+        """
+        mm, nn, cc = y_pred.shape[2:]
+        y_pred = tf.reshape(y_pred, [-1, mm, nn, cc])
+        #print(y_pred.shape)
+
+        if self.penalty == 'l1':
+            dif = [tf.abs(f) for f in self._diffs(y_pred)]
+        else:
+            assert self.penalty == 'l2', 'penalty can only be l1 or l2. Got: %s' % self.penalty
+            dif = [f * f for f in self._diffs(y_pred)]
+
+        df = [tf.reduce_mean(K.batch_flatten(f), axis=-1) for f in dif]
+        grad = tf.add_n(df) / len(df)
+
+        if self.loss_mult is not None:
+            grad *= self.loss_mult
+
+        return grad
+
+    def mean_loss(self, y_true, y_pred):
+        """
+        returns Tensor of size ()
+        """
+
+        return K.mean(self.loss(y_true, y_pred))
+
+
+
+
+
+class GradMax:
     """
     N-D gradient loss.
     loss_mult can be used to scale the loss value - this is recommended if
@@ -64,6 +221,10 @@ class Grad:
         if self.loss_mult is not None:
             grad *= self.loss_mult
 
+        max_loss = 0.1 * tf.reduce_mean(tf.square(y_pred))
+
+        grad = grad + max_loss
+
         return grad
 
     def mean_loss(self, y_true, y_pred):
@@ -112,7 +273,7 @@ class Dice:
 
         div_no_nan = tf.math.divide_no_nan if hasattr(tf.math, 'divide_no_nan') else tf.div_no_nan  # pylint: disable=no-member
         dice = tf.reduce_mean(div_no_nan(top, bottom))
-        return -dice
+        return 1-dice
 
 class MutualInformation2:
     def loss(self,y_true, y_pred):
@@ -336,19 +497,79 @@ class AME:
         return ame
 
 
+
 class MAD:
-    def loss(self, y_true, y_pred, reduce='mean'):
-        # compute mse
-        ame = tf.abs(y_true - y_pred)
-        # reduce
-        if reduce == 'mean':
-            ame = tf.reduce_mean(ame)
-        elif reduce == 'max':
-            ame = K.max(ame)
-        elif reduce is not None:
-            raise ValueError(f'Unknown reduction type: {reduce}')
-        # loss
-        return ame
+    def loss(self, _, y_pred):
+        # Calculate the absolute difference between each slice along C
+        # This will give us a tensor of shape (B, C, C, MM, NN)
+        # by broadcasting the original tensor over itself
+        diff = tf.expand_dims(y_pred, axis=2) - tf.expand_dims(y_pred, axis=1)
+
+        # Calculate the mean absolute error across the channel dimension
+        # This gives us the mean absolute error for each pair of slices along C
+        mae = tf.reduce_mean(tf.abs(diff), axis=[1, 3, 4])  # (B, C, C)
+
+        # Average the MAE across all pairs of slices to get a single loss value per batch
+        loss = tf.reduce_mean(mae)
+
+        return loss
+
+
+class PairwiseDiceLoss:
+    def pairwise_dice_coefficient(self, y_pred, smooth=1e-5):
+        """
+        Compute pairwise Dice coefficient across all slices along the channel dimension (C).
+
+        Args:
+        y_pred: Tensor of shape (B, C, MM, NN), where B is batch size,
+                C is number of channels, and MM, NN are spatial dimensions.
+
+        Returns:
+        A single loss value that encourages similarity across all C slices.
+        """
+        # Expand dimensions to compute pairwise differences along C
+        y_pred_1 = tf.expand_dims(y_pred, axis=2)  # Shape: (B, C, 1, MM, NN)
+        y_pred_2 = tf.expand_dims(y_pred, axis=1)  # Shape: (B, 1, C, MM, NN)
+
+        # Compute intersection and union for Dice similarity
+        intersection = tf.reduce_sum(y_pred_1 * y_pred_2, axis=[3, 4])  # (B, C, C)
+        union = tf.reduce_sum(y_pred_1, axis=[3, 4]) + tf.reduce_sum(y_pred_2, axis=[3, 4])  # (B, C, C)
+
+        # Compute pairwise Dice coefficient
+        dice = (2. * intersection + smooth) / (union + smooth)  # (B, C, C)
+
+        # Return the mean pairwise Dice coefficient (higher = better alignment)
+        return tf.reduce_mean(dice)
+
+    def dice_coefficient_with_reference(self, y_pred, smooth=1e-5):
+        """
+        Compute Dice coefficient for each channel by comparing it to the mask at C=0.
+
+        Args:
+        y_pred: Tensor of shape (B, C, MM, NN), where B is batch size,
+                C is number of channels, and MM, NN are spatial dimensions.
+
+        Returns:
+        A single loss value that encourages similarity of all C slices to the reference mask at C=0.
+        """
+        # Extract reference mask (C=0)
+        ref_mask = tf.expand_dims(y_pred[:, 0, :, :], axis=1)  # Shape: (B, 1, MM, NN)
+
+        # Compute intersection and union for each channel with the reference
+        intersection = tf.reduce_sum(ref_mask * y_pred, axis=[2, 3])  # (B, C)
+        union = tf.reduce_sum(ref_mask, axis=[2, 3]) + tf.reduce_sum(y_pred, axis=[2, 3])  # (B, C)
+
+        # Compute Dice coefficient per channel
+        dice = (2. * intersection + smooth) / (union + smooth)  # (B, C)
+
+        # Return mean Dice coefficient across all channels (except the reference channel itself)
+        return tf.reduce_mean(dice[:, 1:])  # Exclude C=0 from averaging
+
+    def loss(self, _, y_pred):
+        """
+        Compute the pairwise Dice loss, where minimizing it enforces similarity across C slices.
+        """
+        return 1 - self.dice_coefficient_with_reference(y_pred)
 
 
 class dice_loss:
@@ -363,6 +584,22 @@ class dice_loss:
 
     def loss(self, y_true, y_pred):
         return 1 - self.dice_coefficient(y_true, y_pred)
+
+class DiceLossMultiContrast:
+    """
+    N-D Dice loss for segmentation masks with batch and multi-class support
+    """
+    def dice_coefficient(self, y_true, y_pred, smooth=1e-6):
+        # Compute per-class Dice coefficient
+        intersection = tf.reduce_sum(y_true * y_pred, axis=[1, 2])  # Sum over spatial dimensions MM, NN
+        union = tf.reduce_sum(y_true, axis=[1, 2]) + tf.reduce_sum(y_pred, axis=[1, 2])  # Sum over spatial dimensions
+
+        dice = (2. * intersection + smooth) / (union + smooth)  # Per class
+        return tf.reduce_mean(dice, axis=-1)  # Average over classes
+
+    def loss(self, y_true, y_pred):
+        dice_coeff = self.dice_coefficient(y_true, y_pred)
+        return 1 - tf.reduce_mean(dice_coeff)  # Average over batch
 
 
 class design_loss():
@@ -384,9 +621,8 @@ class design_loss():
         if y_true.shape[-1] != y_pred.shape[-1]:
             y_true = tf.repeat(y_true, repeats=y_pred.shape[-1], axis=-1)
         round = self._clip(y_true)
-        # y_true, y_pred = tf.cast(y_true, tf.float64), tf.cast(y_pred, tf.float64)
-        return self.parameter * self.MSE((1 - round) * y_true, (1 - round) * y_pred) + self.parameter_mi * self.mi(
-            y_true, y_pred)
+        y_true, y_pred = tf.cast(y_true, tf.float64), tf.cast(y_pred, tf.float64)
+        return self.parameter * self.MSE((1 - round) * y_true, (1 - round) * y_pred) + self.parameter_mi * self.mi(y_true, y_pred)
 
 
 def residuce_loss(y_true, y_pred):
@@ -396,7 +632,66 @@ def none_loss(y_true, y_pred):
     return tf.convert_to_tensor([0.0])
 
 
-def PCA_loss(y_true, y_pred):
+def PCA_groupwise(_, y_pred):
+    """
+    Computes the PCA loss for a batch of predicted and true images.
+
+    Args:
+        y_true: Tensor of shape (B, H, W, 1), ground truth images.
+        y_pred: Tensor of shape (B, H, W, 1), predicted images.
+
+    Returns:
+        L_pca: Tensor of shape (B,), the PCA loss for each batch element.
+    """
+    # Reshape the inputs to (B, H*W, 1) to prepare for PCA computation
+    shape = tf.shape(y_pred)
+    #print(shape)
+    C, H, W = shape[-4], shape[-3], shape[-2]
+    y_pred_t = tf.transpose(y_pred, perm=[0, 4, 2, 3, 1])
+    #y_true_flat = tf.reshape(y_true, (-1, H * W))
+    M = tf.reshape(y_pred_t, (-1, H * W, C)) #(B, H*W, C)
+
+    # Stack y_true and y_pred along the last axis to form M of shape (B, H*W, 2)
+    #M = tf.stack([y_true_flat, y_pred_flat], axis=-1)  # Shape (B, H*W, 2)
+
+    # Step 1: Compute the column-wise mean matrix (Mt) for each batch
+    Mt = tf.reduce_mean(M, axis=1, keepdims=True)  # Shape (B, 1, 2)
+
+    # Step 2: Center the data by subtracting the column-wise mean
+    M_centered = M - Mt  # Shape (B, H*W, 2)
+
+    # Step 3: Compute the standard deviation for each column in the batch
+    sigma = tf.math.reduce_std(M, axis=1, keepdims=True)  # Shape (B, 1, 2)
+
+    # Step 4: Form the diagonal matrix Σ^(-1) for each batch
+    Sigma_inv = tf.linalg.diag(1 / sigma[:, 0, :])  # Shape (B, 2, 2)
+
+    # Step 5: Normalize M_centered by Σ^(-1) (matrix multiplication)
+    M_normalized = tf.matmul(M_centered, Sigma_inv)  # Shape (B, H*W, 2)
+
+    # Step 6: Compute the normalized correlation matrix K for each batch
+    num_samples = tf.cast(H*W - 1, tf.float32)
+    K = (1 / num_samples) * tf.matmul(M_normalized, M_normalized, transpose_a=True)  # Shape (B, 2, 2)
+
+    # Step 6a: Symmetrize K to ensure numerical stability
+    #K_symmetric = 0.5 * (K + tf.linalg.matrix_transpose(K))  # Symmetrize K
+
+    # Step 7: Perform eigendecomposition on K_symmetric for each batch
+    eigenvalues, _ = tf.linalg.eigh(K)  # Shape (B, 2)
+
+    # Step 8: Sort eigenvalues in descending order
+    sorted_indices = tf.argsort(eigenvalues, direction='DESCENDING', axis=-1)  # Shape (B, 2)
+    sorted_eigenvalues = tf.gather(eigenvalues, sorted_indices, batch_dims=1)  # Shape (B, 2)
+
+    # Step 9: Compute L_pca for the first 2 eigenvalues for each batch
+    weights = tf.constant([1, 2, 3, 4, 5], dtype=tf.float32)  # Weights for eigenvalues (1-based index)
+    L_pca = tf.reduce_sum(sorted_eigenvalues * weights, axis=-1)  # Shape (B,)
+    #mean_loss = tf.reduce_mean(L_pca)
+    #print(L_pca, mean_loss)
+    return L_pca
+
+
+def PCA_template(y_true, y_pred):
     """
     Computes the PCA loss for a batch of predicted and true images.
 
@@ -410,10 +705,10 @@ def PCA_loss(y_true, y_pred):
     # Reshape the inputs to (B, H*W, 1) to prepare for PCA computation
     shape = tf.shape(y_true)
     #print(shape)
-    B, H, W = shape[0], shape[1], shape[2]
+    H, W = shape[-3], shape[-2]
 
-    y_true_flat = tf.reshape(y_true, (B, H * W))
-    y_pred_flat = tf.reshape(y_pred, (B, H * W))
+    y_true_flat = tf.reshape(y_true, (-1, H * W))
+    y_pred_flat = tf.reshape(y_pred, (-1, H * W))
 
     # Stack y_true and y_pred along the last axis to form M of shape (B, H*W, 2)
     M = tf.stack([y_true_flat, y_pred_flat], axis=-1)  # Shape (B, H*W, 2)
@@ -453,3 +748,157 @@ def PCA_loss(y_true, y_pred):
     #mean_loss = tf.reduce_mean(L_pca)
     #print(L_pca, mean_loss)
     return L_pca
+
+
+def PCA_DIXON(y_true, y_pred):
+    """
+    Computes the PCA loss for a batch of predicted and true images.
+
+    Args:
+        y_true: Tensor of shape (B, H, W, 1), ground truth images.
+        y_pred: Tensor of shape (B, H, W, 1), predicted images.
+
+    Returns:
+        L_pca: Tensor of shape (B,), the PCA loss for each batch element.
+    """
+    # Reshape the inputs to (B, H*W, 1) to prepare for PCA computation
+    shape = tf.shape(y_pred)
+    #print(shape)
+    C, H, W = shape[-4], shape[-3], shape[-2]
+    #print(y_true.shape,  y_pred.shape)
+    #y_true = tf.tile(y_true[:,0][:,None], [1, C, 1, 1, 1])
+    #print(y_true.shape, y_pred.shape)
+    # y_pred = y_pred[:,1:]
+    y_true_flat = tf.reshape(y_true, (-1, H * W))
+    y_pred_flat = tf.reshape(y_pred, (-1, H * W))
+
+    # Stack y_true and y_pred along the last axis to form M of shape (B, H*W, 2)
+    M = tf.stack([y_true_flat, y_pred_flat], axis=-1)  # Shape (B, H*W, 2)
+
+    # Step 1: Compute the column-wise mean matrix (Mt) for each batch
+    Mt = tf.reduce_mean(M, axis=1, keepdims=True)  # Shape (B, 1, 2)
+
+    # Step 2: Center the data by subtracting the column-wise mean
+    M_centered = M - Mt  # Shape (B, H*W, 2)
+
+    # Step 3: Compute the standard deviation for each column in the batch
+    sigma = tf.math.reduce_std(M, axis=1, keepdims=True)  # Shape (B, 1, 2)
+
+    # Step 4: Form the diagonal matrix Σ^(-1) for each batch
+    Sigma_inv = tf.linalg.diag(1 / sigma[:, 0, :])  # Shape (B, 2, 2)
+
+    # Step 5: Normalize M_centered by Σ^(-1) (matrix multiplication)
+    M_normalized = tf.matmul(M_centered, Sigma_inv)  # Shape (B, H*W, 2)
+
+    # Step 6: Compute the normalized correlation matrix K for each batch
+    num_samples = tf.cast(H*W - 1, tf.float32)
+    K = (1 / num_samples) * tf.matmul(M_normalized, M_normalized, transpose_a=True)  # Shape (B, 2, 2)
+
+    # Step 6a: Symmetrize K to ensure numerical stability
+    #K_symmetric = 0.5 * (K + tf.linalg.matrix_transpose(K))  # Symmetrize K
+
+    # Step 7: Perform eigendecomposition on K_symmetric for each batch
+    eigenvalues, _ = tf.linalg.eigh(K)  # Shape (B, 2)
+
+    # Step 8: Sort eigenvalues in descending order
+    sorted_indices = tf.argsort(eigenvalues, direction='DESCENDING', axis=-1)  # Shape (B, 2)
+    sorted_eigenvalues = tf.gather(eigenvalues, sorted_indices, batch_dims=1)  # Shape (B, 2)
+
+    # Step 9: Compute L_pca for the first 2 eigenvalues for each batch
+    weights = tf.constant([1, 2], dtype=tf.float32)  # Weights for eigenvalues (1-based index)
+    L_pca = tf.reduce_sum(sorted_eigenvalues * weights, axis=-1)  # Shape (B,)
+    #mean_loss = tf.reduce_mean(L_pca)
+    #print(L_pca, mean_loss)
+    return L_pca
+
+
+
+def PCA_to_DIXON(_, y_pred):
+    """
+    Computes the PCA loss for a batch of predicted and true images.
+
+    Args:
+        y_true: Tensor of shape (B, H, W, 1), ground truth images.
+        y_pred: Tensor of shape (B, H, W, 1), predicted images.
+
+    Returns:
+        L_pca: Tensor of shape (B,), the PCA loss for each batch element.
+    """
+    # Reshape the inputs to (B, H*W, 1) to prepare for PCA computation
+    shape = tf.shape(y_pred)
+    #print(shape)
+    C, H, W = shape[-1], shape[-3], shape[-2]
+    #print(y_true.shape,  y_pred.shape)
+    y_true = tf.tile(y_pred[...,0][...,None], [1, 1, 1, C])
+    #print(y_true.shape, y_pred.shape)
+    # y_pred = y_pred[:,1:]
+    y_true = tf.transpose(y_true, (0,3,1,2))
+    y_pred = tf.transpose(y_pred, (0,3,1,2))
+    y_true_flat = tf.reshape(y_true, (-1, H * W))
+    y_pred_flat = tf.reshape(y_pred, (-1, H * W))
+
+    # Stack y_true and y_pred along the last axis to form M of shape (B, H*W, 2)
+    M = tf.stack([y_true_flat, y_pred_flat], axis=-1)  # Shape (B, H*W, 2)
+
+    # Step 1: Compute the column-wise mean matrix (Mt) for each batch
+    Mt = tf.reduce_mean(M, axis=1, keepdims=True)  # Shape (B, 1, 2)
+
+    # Step 2: Center the data by subtracting the column-wise mean
+    M_centered = M - Mt  # Shape (B, H*W, 2)
+
+    # Step 3: Compute the standard deviation for each column in the batch
+    sigma = tf.math.reduce_std(M, axis=1, keepdims=True)  # Shape (B, 1, 2)
+
+    # Step 4: Form the diagonal matrix Σ^(-1) for each batch
+    Sigma_inv = tf.linalg.diag(1 / sigma[:, 0, :])  # Shape (B, 2, 2)
+
+    # Step 5: Normalize M_centered by Σ^(-1) (matrix multiplication)
+    M_normalized = tf.matmul(M_centered, Sigma_inv)  # Shape (B, H*W, 2)
+
+    # Step 6: Compute the normalized correlation matrix K for each batch
+    num_samples = tf.cast(H*W - 1, tf.float32)
+    K = (1 / num_samples) * tf.matmul(M_normalized, M_normalized, transpose_a=True)  # Shape (B, 2, 2)
+
+    # Step 6a: Symmetrize K to ensure numerical stability
+    #K_symmetric = 0.5 * (K + tf.linalg.matrix_transpose(K))  # Symmetrize K
+
+    # Step 7: Perform eigendecomposition on K_symmetric for each batch
+    eigenvalues, _ = tf.linalg.eigh(K)  # Shape (B, 2)
+
+    # Step 8: Sort eigenvalues in descending order
+    sorted_indices = tf.argsort(eigenvalues, direction='DESCENDING', axis=-1)  # Shape (B, 2)
+    sorted_eigenvalues = tf.gather(eigenvalues, sorted_indices, batch_dims=1)  # Shape (B, 2)
+
+    # Step 9: Compute L_pca for the first 2 eigenvalues for each batch
+    weights = tf.constant([1, 2], dtype=tf.float32)  # Weights for eigenvalues (1-based index)
+    L_pca = tf.reduce_sum(sorted_eigenvalues * weights, axis=-1)  # Shape (B,)
+    #mean_loss = tf.reduce_mean(L_pca)
+    #print(L_pca, mean_loss)
+    return L_pca
+
+
+
+class MutualInformationVXM(ne.metrics.MutualInformation):
+    """
+    Soft Mutual Information approximation for intensity volumes
+
+    More information/citation:
+    - Courtney K Guo.
+      Multi-modal image registration with unsupervised deep learning.
+      PhD thesis, Massachusetts Institute of Technology, 2019.
+    - M Hoffmann, B Billot, DN Greve, JE Iglesias, B Fischl, AV Dalca
+      SynthMorph: learning contrast-invariant registration without acquired images
+      IEEE Transactions on Medical Imaging (TMI), 41 (3), 543-558, 2022
+      https://doi.org/10.1109/TMI.2021.3116879
+    """
+
+    def loss(self, y_true, y_pred):
+        #print(y_pred.shape, y_true.shape)
+        return -self.volumes(y_true, y_pred)
+
+
+class MI_PCA_loss:
+    def loss(self,y_true, y_pred):
+        L_pca = PCA_DIXON(y_true, y_pred)
+        mean_loss = tf.reduce_mean(L_pca)
+        return MutualInformationVXM().loss(y_true, y_pred) + mean_loss

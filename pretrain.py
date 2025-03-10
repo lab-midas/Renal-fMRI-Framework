@@ -1,13 +1,13 @@
 import os
-import pathlib
+
 import wandb
 from tensorflow.keras import optimizers
-from models.model_seg_gn import modelObj
-from losses.constrained_contrastive_loss import lossObj
-import configs.pretrain as cfg
-from utils import setup_TF_environment, get_callbacks
-from data.pretrain_Data_Generator import DataLoaderObj
 
+import configs.pretrain as cfg
+from data.pretrain_Data_Generator import DataLoaderObj
+from losses.constrained_contrastive_loss import lossObj
+from models.model_seg_gn import modelObj
+from utils import setup_TF_environment, get_callbacks
 
 
 def main(debug):
@@ -78,8 +78,8 @@ def main(debug):
     wandb.finish()
 
 if __name__ == '__main__':
-    # os.environ['CUDA_VISIBLE_DEVICES'] = "3"
-    debug = False
+    os.environ['CUDA_VISIBLE_DEVICES'] = "2"
+    debug = True
     main(debug)
 
 

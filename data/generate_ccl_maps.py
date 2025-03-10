@@ -1,16 +1,20 @@
-import os, natsort
-import scipy.io as sio
-import pathlib
-from sklearn.cluster import MiniBatchKMeans
-import sys, numpy as np
-import nibabel as nib
-from sklearn.decomposition import PCA
 import argparse
+import glob
+import natsort
+import os
+import pathlib
+
+import nibabel as nib
+import numpy as np
+import scipy.io as sio
+from sklearn.cluster import MiniBatchKMeans
+from sklearn.decomposition import PCA
+from tqdm import tqdm
+
+from utils import contrastStretch, normalize
 from utils import myCrop3D
 from utils import performDenoising
-from utils import contrastStretch, normalize, normalize_img_zmean
-import glob
-from tqdm import tqdm
+
 
 def generate_constraint_maps_batch(parse_cfg):
     '''
@@ -32,7 +36,7 @@ def generate_constraint_maps_batch(parse_cfg):
         save_str = f'Constraint_map_{subName}_' + str(num_param_clusters) + '.mat'
         save_path = os.path.join(save_dir, save_str)
         img_exists = len(glob.glob(os.path.join(datadir, subName, f"{contrast}/imagesTr/*")))
-        lbl_exists = len(glob.glob(os.path.join(datadir, subName, f"{contrast}/labelsTr/*cortex*")))
+        lbl_exists = len(glob.glob(os.path.join(datadir, subName, f"{contrast}/labelsTr/*volume*")))
         if not os.path.exists(save_path) and img_exists and lbl_exists:
             img, mask = load_img(datadir, subName, contrast, opShape)
             print('Generating parametric cluster for K=', num_param_clusters)
@@ -136,16 +140,16 @@ def load_img(datadir, subName, contrast, opShape):
 
     # read mask
     mask_path = glob.glob(os.path.join(datadir, subName, f"{contrast}/labelsTr/*volume*"))
-    mask_cortex_path = glob.glob(os.path.join(datadir, subName, f"{contrast}/labelsTr/*cortex*"))
+    #mask_cortex_path = glob.glob(os.path.join(datadir, subName, f"{contrast}/labelsTr/*cortex*"))
     path_mask_left = [s for s in mask_path if "left" in s.lower()][0]
     path_mask_right = [s for s in mask_path if "right" in s.lower()][0]
-    path_cortex_left = [s for s in mask_cortex_path if "left" in s.lower()][0]
-    path_cortex_right = [s for s in mask_cortex_path if "right" in s.lower()][0]
+    #path_cortex_left = [s for s in mask_cortex_path if "left" in s.lower()][0]
+    #path_cortex_right = [s for s in mask_cortex_path if "right" in s.lower()][0]
 
     vol_left = np.flip(np.rot90(nib.load(path_mask_left).get_fdata(), -1),1)
     vol_right = np.flip(np.rot90(nib.load(path_mask_right).get_fdata(), -1), 1)
-    cortex_left = np.flip(np.rot90(nib.load(path_cortex_left).get_fdata(), -1), 1)
-    cortex_right = np.flip(np.rot90(nib.load(path_cortex_right).get_fdata(), -1), 1)
+    cortex_left = np.zeros_like(vol_left)#np.flip(np.rot90(nib.load(path_cortex_left).get_fdata(), -1), 1)
+    cortex_right = np.zeros_like(vol_right)#np.flip(np.rot90(nib.load(path_cortex_right).get_fdata(), -1), 1)
     medulla_right = vol_right - cortex_right
     medulla_left = vol_left - cortex_left
     background = np.ones_like(vol_left) - vol_left - vol_right
@@ -163,12 +167,12 @@ def main():
     description_txt = 'Constraint map generation for CCL'
     parser = argparse.ArgumentParser(description=description_txt)
     parser.add_argument("--save_dir", type=str,
-                        default="/home/raghoul1/Renal_fMRI/data/Constraint_maps/labels_weighted_BG")
+                        default="/home/raghoul1/Renal_fMRI/data/Constraint_maps/param")
     parser.add_argument("--data_dir", type=str,
                         default="/home/raghoul1/Renal_fMRI/data/resampled")
     parser.add_argument("--opShape", type=int, default=256,
                         help="Matrix size X (Int)(Default 160)")
-    parser.add_argument("--contrast", type=str, default="Diffusion")
+    parser.add_argument("--contrast", type=str, default="BOLD")
     parser.add_argument("--numCluster", type=int, default=20,
                         help="NUmber of clusters for Kmeans (Int)(Default 20)")
     parse_cfg = parser.parse_args()

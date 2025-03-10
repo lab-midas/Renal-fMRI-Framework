@@ -1,12 +1,13 @@
-import tensorflow.keras
-import numpy as np
-import threading
-import tensorflow as tf
-import random
-import albumentations as A
-import os
-from random import shuffle
 import itertools
+import os
+import random
+import threading
+from random import shuffle
+
+import albumentations as A
+import numpy as np
+import tensorflow as tf
+import tensorflow.keras
 
 
 class DataLoaderObj(tensorflow.keras.utils.Sequence):

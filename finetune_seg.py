@@ -1,13 +1,24 @@
-import pathlib
 import os
 import wandb
 from tensorflow.keras import optimizers
 import configs.finetune as cfg
-from utils import setup_TF_environment, get_callbacks, get_callbacks_save_best
+from utils import setup_TF_environment, get_callbacks_save_best
 from losses.ft_losses import lossObj
 from data.train_seg_Data_Generator import DataLoader
 from models.model_seg_gn import modelObj
 from losses.reg_losses import dice_loss
+import os
+
+import wandb
+from tensorflow.keras import optimizers
+
+import configs.finetune as cfg
+from data.train_seg_Data_Generator import DataLoader
+from losses.ft_losses import lossObj
+from losses.reg_losses import dice_loss
+from models.model_seg_gn import modelObj
+from utils import setup_TF_environment, get_callbacks_save_best
+
 
 def main(debug):
     setup_TF_environment(cfg.gpus_available)
@@ -16,7 +27,7 @@ def main(debug):
         wandb.init(project="Renal_fMRI",
                    entity=cfg.wandb_entity,
                    group="pretraining",
-                   name=cfg.experiment_name,
+                   name=f'{cfg.experiment_name}_fold{cfg.fold}',
                    settings=wandb.Settings(start_method='thread'))
     ''' Load train data'''
     train_gen = DataLoader(cfg, debug=debug, train_flag=True)
@@ -66,7 +77,7 @@ def main(debug):
         for name, value in cfg.__dict__.items():
             f.write('{} = {!r}\n'.format(name, value))
 
-    wandb.finish()
+    #wandb.finish()
 
 if __name__ == '__main__':
     debug = False

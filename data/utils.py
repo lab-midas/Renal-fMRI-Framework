@@ -67,3 +67,18 @@ def performDenoising(ipImg, wts):
     opImg = opImg * max_val
     return opImg
 
+def mask_to_one_hot(mask: np.ndarray, num_classes: int = 5) -> np.ndarray:
+    """
+    Convert a grayscale mask to a one-hot encoded format.
+
+    Args:
+        mask (np.ndarray): 2D numpy array where each pixel corresponds to a class index.
+        num_classes (int): Number of classes.
+
+    Returns:
+        np.ndarray: One-hot encoded mask with shape (H, W, num_classes).
+    """
+    one_hot = np.zeros((*mask.shape, num_classes), dtype=np.float32)
+    for class_idx in range(num_classes):
+        one_hot[..., class_idx] = (mask == class_idx).astype(np.float32)
+    return one_hot

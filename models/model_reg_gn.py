@@ -1,25 +1,26 @@
-import tensorflow as tf
-from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import Conv2D, Dense, UpSampling2D, Softmax
-from tensorflow.keras.layers import Concatenate, Activation
-from tensorflow.keras.layers import Flatten 
-from tensorflow.keras.layers import MaxPooling2D, Lambda
-from tensorflow_addons.layers import  GroupNormalization 
-import neurite as ne
-import tensorflow.keras.backend as K
-from tensorflow.keras.layers import Layer
 import warnings
-from .model_seg_gn import modelObj as modelObjSeg
+
+import neurite as ne
+import tensorflow as tf
+import tensorflow.keras.backend as K
+from tensorflow.keras import Input, Model
+from tensorflow.keras.layers import Concatenate, Activation
+from tensorflow.keras.layers import Conv2D, UpSampling2D
+from tensorflow.keras.layers import Layer
+from tensorflow.keras.layers import MaxPooling2D, Lambda
+from tensorflow_addons.layers import GroupNormalization
 
 
 class modelObj:
     def __init__(self, cfg, kernel_init=None):
         self.img_size_x   = cfg.img_size_x
         self.img_size_y   = cfg.img_size_y
-        self.num_channels = cfg.num_channels 
-        self.latent_dim   = cfg.latent_dim   # representational space dim
+        self.num_channels = cfg.num_channels
         self.conv_kernel  = (3,3)
+        self.num_classes = cfg.num_classes
+        self.num_contrasts = cfg.num_contrasts
         self.no_filters   = [1, 16, 32, 64, 128, 128]
+        self.thres_coef = tf.Variable(tf.constant(tf.random.normal([1]), shape=(1,), dtype=tf.float32), trainable=True)
         if kernel_init == None:
             self.kernel_init = tf.keras.initializers.HeNormal(seed=1)
         else:
@@ -58,94 +59,6 @@ class modelObj:
         up = Activation('relu', name = 'dec_act2_'+ str(block_name))(up)
         return up
 
-    
-    def encoder_network(self, encoder_list_return=0, inputs=None, add_PH=False, 
-                        name='enc_model'):
-        ''' Define the encoder network '''
-        no_filters = self.no_filters
-        #layers list for skip connections
-        enc_layers_list=[]
-        # Level 1
-        if inputs is None:
-            inputs = Input((self.img_size_x, self.img_size_y, self.num_channels))
-            
-        enc_c1 = self.encoder_block_contract(inputs, no_filters[1], pool_flag=False, block_name=1)
-        # Level 2
-        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
-        # Level 3
-        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
-        # Level 4
-        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
-        # Level 5 - 2x Conv
-        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
-        # Level 6 - 2x Conv
-        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
-        
-        enc_layers_list.append(enc_c1)
-        enc_layers_list.append(enc_c2)
-        enc_layers_list.append(enc_c3)
-        enc_layers_list.append(enc_c4)
-        enc_layers_list.append(enc_c5)
-        
-        '''Encoder network with a non-linear projection head (MLP)'''
-        if add_PH:
-            PH_flat = Flatten()(enc_c6)
-        
-            ''' Add PH '''
-            PH_a = Dense(1024, name = 'PH_a', activation='relu', use_bias=False)(PH_flat)
-            PH_b = Dense(128, name = 'PH_b', activation=None, use_bias=False)(PH_a) 
-            model = Model(inputs=[inputs], outputs=[PH_b], name=name)
-        else:       
-            model = Model(inputs=[inputs], outputs=[enc_c6], name=name)
-       
-        if(encoder_list_return==1):
-            return model, enc_layers_list
-        else:
-        
-            return model
-        
-        return model
-
-    def encoder_decoder_network(self, num_dec_levels=5, enc_pretr_wts=None, 
-                                enc_freeze=False, add_PH=False, name='dec_model', PH_str = ''):
-        
-        no_filters = self.no_filters  
-        latent_dim = self.latent_dim   
-        num_groups = latent_dim // 4        
-        inputs = Input((self.img_size_x, self.img_size_y, self.num_channels))
-        encoder_list_return=1
-        enc_model,enc_layers_list  = self.encoder_network(encoder_list_return, inputs)
-        
-        if enc_pretr_wts is not None:
-            print('Loading pretrained_weights for encoder, matching by name')
-            enc_model.load_weights(enc_pretr_wts, by_name  = True)
-        enc_c6 = enc_model.output
-       
-        layer_idx = len(no_filters)-1
-        tmp_dec = self.decoder_block_expand(enc_c6, no_filters[layer_idx], enc_layers_list[layer_idx-1], block_name=layer_idx)        
-        for dec_layer in range(1,num_dec_levels):
-            print('Generating dec layer ', dec_layer)
-            layer_idx = layer_idx-1
-            tmp_dec = self.decoder_block_expand(tmp_dec, no_filters[layer_idx], enc_layers_list[layer_idx-1], block_name=layer_idx)
-        
-        '''Decoder network with a non-linear projection head (MLP)'''
-        if add_PH:  
-               
-            PH_A = Conv2D(latent_dim,(1,1),padding='same', use_bias=False, name='PH_A_conv1'+PH_str, kernel_initializer=self.kernel_init)(tmp_dec)        
-            PH_A = GroupNormalization(groups = num_groups, name = 'PH_A_bn1'+PH_str)(PH_A)
-            PH_A = Activation('relu', name = 'PH_A_act1'+PH_str)(PH_A)
-            PH_B = Conv2D(latent_dim,(1,1),padding='same', use_bias=False, name='PH_B1'+PH_str, kernel_initializer=self.kernel_init)(PH_A)        
-            enc_dec = Model(inputs=[inputs], outputs=[PH_B], name=name)
-        else:   
-            enc_dec = Model(inputs=[inputs], outputs=[tmp_dec], name=name) 
-        
-        if enc_freeze:
-            print('Freezing all encoder weights, except Batch Normalization')            
-            for layer in enc_dec.layers:
-                layer_name = layer.name
-                if 'enc' in layer_name:                  
-                    layer.trainable = False 
-        return enc_dec
 
 
     def reg_unet(self, weighted=False):
@@ -195,77 +108,6 @@ class modelObj:
             model = Model(inputs=[im_fix, im_mov, lbl_mov], outputs=[warped_im_mov, warped_lbl_mov, flo_forward, resduce])
         return model
 
-    def reg_unet_ft(self, cfg, weighted=False, train_mode=True):
-        no_filters = self.no_filters
-        im_fix = Input((self.img_size_x, self.img_size_y, self.num_channels))  # fixed
-        im_mov = Input((self.img_size_x, self.img_size_y, self.num_channels))  # moving
-        lbl_mov = Input((self.img_size_x, self.img_size_y, self.num_channels))
-
-        mm_utils = modelObjSeg(cfg)
-        path = "/home/raghoul1/Renal_fMRI/checkpoints/pretrain/pretrain/checkpoints/model_epoch_0200.h5"
-        ft_net = mm_utils.encoder_decoder_network(add_PH=True, PH_str='ccl')
-        ft_net.load_weights(path)
-
-        for layer in ft_net.layers:
-            layer.trainable = False
-
-
-        ft_fix = ft_net(im_fix)
-        ft_mov = ft_net(im_mov)
-        ft_fix = MinMaxNormalizeLayer()(ft_fix)
-        ft_mov = MinMaxNormalizeLayer()(ft_mov)
-
-        if weighted:
-            weight = Input((self.img_size_x, self.img_size_y, self.num_channels))
-        inputs = tf.concat([im_fix, im_mov], axis=3)
-
-        # Encoder fine network
-        enc_c1 = self.encoder_block_contract(inputs, no_filters[1], pool_flag=False, block_name=1)
-        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
-        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
-        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
-        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
-        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
-
-        ###################################
-        # Decoder network - Upsampling Path
-        ###################################
-        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
-        dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
-        dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
-        dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
-        dec_c1 = self.decoder_block_expand(dec_c2, no_filters[1], enc_c1, block_name=1)
-
-        model_op = Conv2D(16, 3, padding='same', kernel_initializer=self.kernel_init)(dec_c1)
-        reg_op2 = Activation('relu')(model_op)
-        flo_forward = Conv2D(2, 1, name='reg_layer', padding='same', use_bias=False, kernel_initializer=self.kernel_init)(reg_op2)
-        flo_backward = flowinverse(flo_forward)
-
-        warped_im_mov = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False, name='stn_mov_im')((im_mov, flo_forward))
-        warped_ft_mov = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False,
-                                           name='stn_ft_im')((ft_mov, flo_forward))
-        res_ft = Lambda(lambda x: x[0] - x[1], name='res_ft')([ft_fix, warped_ft_mov])
-
-
-        warped_lbl_mov = SpatialTransformer(interp_method='nearest', fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False, name='stn_mov_lbl')((lbl_mov, flo_forward))
-        inverse_warped_moving = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False, name='defo_iv')([warped_im_mov, flo_backward])
-        resduce = Lambda(lambda x: x[0] - x[1], name='rl')([im_mov, inverse_warped_moving])
-        if train_mode:
-            if weighted:
-                warped_im_mov = Lambda(lambda x: x[0] * x[1], name='warped_im_mov')([weight, warped_im_mov])
-                res_ft = Lambda(lambda x: x[0] * x[1], name='warped_ft_mov')([weight, res_ft])
-                resduce = Lambda(lambda x: x[0] * x[1], name='resduce')([weight, resduce])
-                flo_forward = Lambda(lambda x: x[0] * x[1], name='flo_forward')([weight, flo_forward])
-                model = Model(inputs=[im_fix, im_mov, lbl_mov, weight], outputs=[warped_im_mov, res_ft, warped_lbl_mov, flo_forward, resduce]) # pred_fix_affine
-            else:
-                model = Model(inputs=[im_fix, im_mov, lbl_mov], outputs=[warped_im_mov, res_ft, warped_lbl_mov, flo_forward, resduce])
-        else:
-            if weighted:
-                model = Model(inputs=[im_fix, im_mov, lbl_mov, weight],
-                              outputs=[warped_im_mov, res_ft, warped_lbl_mov, flo_forward, ft_fix, ft_mov, warped_ft_mov])
-            else:
-                model = Model(inputs=[im_fix, im_mov, lbl_mov], outputs=[warped_im_mov, res_ft, warped_lbl_mov, flo_forward, ft_fix, ft_mov, warped_ft_mov])
-        return model
 
 
     def reg_unet_mind(self, cfg, weighted=False, train_mode=True):
@@ -310,19 +152,186 @@ class modelObj:
 
         return model
 
-    def affine_net(self):
-        no_filters = self.no_filters
-        im_fix = Input((self.img_size_x, self.img_size_y, self.num_channels))  # fixed
-        im_mov = Input((self.img_size_x, self.img_size_y, self.num_channels))  # moving
-        lbl_mov = Input((self.img_size_x, self.img_size_y, self.num_channels))  # moving
-        inputs = tf.concat([im_fix, im_mov], axis=3)
 
+
+    def reg_unet_momind_groupwise(self):
+        ## without affine
+        no_filters = self.no_filters
+        im_template = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='template')  # fixed
+        im_multi = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='images')  # moving
+        param = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='params')
+        lbl = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes), name='labels')
+
+        im_template_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(im_template)
+        im_multi_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(im_multi)
+        param_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(
+            param)
+        lbl_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_classes]))(
+            lbl)
+
+        inputs = tf.concat([im_template_reshaped, im_multi_reshaped], axis=-1)
+
+        # Encoder fine network
+        enc_c1 = self.encoder_block_contract(inputs, no_filters[1], pool_flag=False, block_name=1)
+        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
+        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
+        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
+        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
+        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
+
+        ###################################
+        # Decoder network - Upsampling Path
+        ###################################
+        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
+        dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
+        dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
+        dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
+        dec_c1 = self.decoder_block_expand(dec_c2, no_filters[1], enc_c1, block_name=1)
+
+        model_op = Conv2D(16, 3, padding='same', kernel_initializer=self.kernel_init)(dec_c1)
+        reg_op2 = Activation('relu')(model_op)
+        flo_forward = Conv2D(2, 1, name='pred_flow_batch',
+                             padding='same', use_bias=False, kernel_initializer=self.kernel_init)(reg_op2)
+        flo_backward = flowinverse(flo_forward)
+
+        warped_im_mov_deformable = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                      shift_center=False, name='pred_fix_deformable_batch')((im_multi_reshaped, flo_forward))
+        warped_param_mov = SpatialTransformer(interp_method='nearest', fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                              shift_center=False, name='pred_fix_momind_group')((param_reshaped, flo_forward))
+        warped_lbl_mov = SpatialTransformer(interp_method='nearest', fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                            shift_center=False, name='pred_fix_lbl_group')((lbl_reshaped, flo_forward))
+        inverse_warped_moving = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                   shift_center=False, name='pred_mov_affine_diffeo')([warped_im_mov_deformable, flo_backward])
+        resduce = Lambda(lambda x: x[0] - x[1], name='diffeo')([im_multi_reshaped, inverse_warped_moving])
+
+        flo_forward = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, 2)),
+                             name='pred_flow')(flo_forward)
+        warped_im_mov_deformable = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels)),
+                                          name='pred_fix_deformable')(warped_im_mov_deformable)
+        warped_param_mov = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels)),
+                                  name = 'pred_fix_momind')(warped_param_mov)
+        warped_lbl_mov = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes)),
+                                name='pred_fix_lbl')(warped_lbl_mov)
+
+        model = Model(inputs=[im_template, im_multi, lbl, param],
+                      outputs=[warped_im_mov_deformable, warped_lbl_mov, warped_param_mov, flo_forward, resduce]) # pred_fix_affine
+
+
+        return model
+
+    def low_rank(self, L):
+        L_pre = L  # (nb, nt, nx*ny)
+        S, U, V = tf.linalg.svd(L_pre)
+        # s is a tensor of singular values. shape is [..., P]. (nb, nt)
+        # u is a tensor of left singular vectors. shape is [..., M, P]. (nb, nt, nt)
+        # v is a tensor of right singular vectors. shape is [..., N, P]. (nb, nx*ny, nt)
+
+        # update the threshold
+        # s[..., 0] is the largest value
+        thres = tf.sigmoid(self.thres_coef) * S[:, 0]
+        thres = tf.expand_dims(thres, -1)
+
+        # Only keep singular values greater than thres
+        S = tf.nn.relu(S - thres) + thres * tf.nn.sigmoid(S - thres)
+        S = tf.linalg.diag(S)  # (nb, nt, nt)
+
+        V_conj = tf.transpose(V, perm=[0, 2, 1])  # (nb, nt, nx*ny)
+        V_conj = tf.math.conj(V_conj)
+        US = tf.linalg.matmul(U, S)  # (nb, nt, nt)
+        L = tf.linalg.matmul(US, V_conj)  # (nb, nt, nx*ny)
+        #print('L', L.shape)
+        return L
+
+    def reg_groupwise(self, test_mode=False, weighted=False, clip=False):
+        ## PCA training
+        no_filters = self.no_filters
+        template = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='template')  # moving
+        moving = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='moving')  # moving
+        moving_lbl = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes), name='moving_lbl')
+        if weighted:
+            weights = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='weights')
+
+        template_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(template)
+        moving_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(moving)
+        moving_lbl_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_classes]))(moving_lbl)
+        #print('moving_reshaped', moving_reshaped.shape)
+        inputs = tf.concat([template_reshaped, moving_reshaped], axis=-1)
+        #print('inputs', inputs.shape)
+        # Encoder fine network
+        enc_c1 = self.encoder_block_contract(inputs, no_filters[1], pool_flag=False, block_name=1)
+        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
+        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
+        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
+        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
+        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
+
+        ###################################
+        # Decoder network - Upsampling Path
+        ###################################
+        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
+        dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
+        dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
+        dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
+        dec_c1 = self.decoder_block_expand(dec_c2, no_filters[1], enc_c1, block_name=1)
+
+        model_op = Conv2D(16, 3, padding='same', kernel_initializer=self.kernel_init)(dec_c1)
+        reg_op2 = Activation('relu')(model_op)
+        flo_forward = Conv2D(2, 1, name='pred_flow',padding='same', use_bias=False, kernel_initializer=self.kernel_init)(reg_op2)
+        flo_backward = flowinverse(flo_forward)
+        #print('flo_forward', flo_forward.shape)
+        warped_im_mov_deformable = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),shift_center=False, name='pred_fix_deformable_batch')((moving_reshaped, flo_forward))
+        #print('warped_im_mov_deformable', warped_im_mov_deformable.shape)
+        warped_lbl_mov = SpatialTransformer(interp_method='nearest', fill_value=0, shape=(self.img_size_x, self.img_size_y),shift_center=False, name='pred_fix_lbl_group')((moving_lbl_reshaped, flo_forward))
+        #print('warped_lbl_mov', warped_lbl_mov.shape)
+        inverse_warped_moving = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False, name='pred_mov_diffeo')([warped_im_mov_deformable, flo_backward])
+        #print('inverse_warped_moving', inverse_warped_moving.shape)
+        resduce = Lambda(lambda x: x[0] - x[1], name='diffeo')([moving_reshaped, inverse_warped_moving])
+        if test_mode:
+            flo_forward = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, 2)), name='pred_flow_reshaped')(flo_forward)
+
+        warped_im_mov_deformable = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels)), name='pred_fix_deformable')(warped_im_mov_deformable)
+        warped_lbl_mov = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes)), name='pred_fix_lbl')(warped_lbl_mov)
+
+        if weighted:
+            warped_im_mov_deformable = Lambda(lambda x: x[0]*x[1], name='weighted_deformable')([warped_im_mov_deformable, weights])
+            weights_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]), name='weights_reshaped')([weights])
+            resduce = Lambda(lambda x: x[0]*x[1], name='weighted_res')([resduce, weights_reshaped])
+            if not test_mode:
+                flo_forward = Lambda(lambda x: x[0]*x[1], name='weighted_flo')([flo_forward, weights_reshaped])
+            model = Model(inputs=[template, moving, moving_lbl, weights],
+                          outputs=[warped_im_mov_deformable, warped_lbl_mov, flo_forward, resduce])
+        else:
+
+            model = Model(inputs=[template, moving, moving_lbl],
+                      outputs=[warped_im_mov_deformable, warped_lbl_mov, flo_forward, resduce]) # pred_fix_affine
+
+
+        return model
+
+
+    def reg_groupwise_affine(self,weighted=False):
+        ## PCA training
+        no_filters = self.no_filters
+        template = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='template')  # moving
+        moving = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='moving')  # moving
+        moving_lbl = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes), name='moving_lbl')
+        if weighted:
+            weights = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='weights')
+
+        template_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(template)
+        moving_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(moving)
+        moving_lbl_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_classes]))(moving_lbl)
+        #print('moving_reshaped', moving_reshaped.shape)
+        inputs = tf.concat([template_reshaped, moving_reshaped], axis=-1)
+        #print('inputs', inputs.shape)
+        # Encoder fine network
         enc_c11 = self.encoder_block_contract(inputs, no_filters[1], pool_flag=False, block_name=11)
         enc_c12 = self.encoder_block_contract(enc_c11, no_filters[2], block_name=12)
         enc_c13 = self.encoder_block_contract(enc_c12, no_filters[3], block_name=13)
         enc_c14 = self.encoder_block_contract(enc_c13, no_filters[4], block_name=14)
         enc_c15 = self.encoder_block_contract(enc_c14, no_filters[5], block_name=15)
         enc_c16 = self.encoder_block_contract(enc_c15, no_filters[5], block_name=16)
+
         reg_coarse_layer = Conv2D(32, 1, name='reg_coarse_layer', padding='same',
                                   use_bias=True,
                                   kernel_initializer=self.kernel_init)(enc_c16)
@@ -332,43 +341,322 @@ class modelObj:
         reg_coarse_layer = tf.keras.layers.Dense(6, name="fc_2")(reg_coarse_layer)
         reg_coarse_layer = tf.keras.layers.Reshape((2, 3))(reg_coarse_layer)
         reg_coarse_layer = AffineToDenseShift((self.img_size_x, self.img_size_y), shift_center=False)(reg_coarse_layer)
-        warped_moving = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False, name='pred_fix_affine')((im_mov, reg_coarse_layer))
+        warped_im_mov_affine = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                  shift_center=False,
+                                                  name='pred_fix_affine')((moving_reshaped, reg_coarse_layer))
 
+        warped_lbl_mov_affine = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                  shift_center=False,
+                                                  name='pred_lbl_affine')((moving_lbl_reshaped, reg_coarse_layer))
+
+        # warped_im_mov_affine = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels)), name='pred_fix_deformable')(warped_im_mov_affine)
+        # warped_lbl_mov_affine = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes)), name='pred_fix_lbl')(warped_lbl_mov_affine)
+
+        if weighted:
+            weights_reshaped = Lambda(
+                lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]),
+                name='weights_reshaped')([weights])
+            warped_im_mov_affine = Lambda(lambda x: x[0] * x[1], name='weighted_deformable')(
+                [warped_im_mov_affine, weights_reshaped])
+
+            model = Model(inputs=[template, moving, moving_lbl, weights],
+                      outputs=[warped_im_mov_affine, warped_lbl_mov_affine, reg_coarse_layer])
+        else:
+            model = Model(inputs=[template, moving, moving_lbl],
+                          outputs=[warped_im_mov_affine, warped_lbl_mov_affine, reg_coarse_layer])
+
+        return model
+
+    def reg_groupwise_affine_nonrigid(self, checkpoint_affine, test_mode=False, weighted=False):
+        ## PCA training
+        no_filters = self.no_filters
+        template = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels),
+                         name='template_deformable')  # moving
+        moving = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels),
+                       name='moving_deformable')  # moving
+        moving_lbl = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes), name='moving_lbl_deformable')
+        if weighted:
+            weights = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='weights_deformable')
+            inputs = [template, moving, moving_lbl, weights]
+        else:
+            inputs = [template, moving, moving_lbl]
+
+        affine_model = self.reg_groupwise_affine(weighted=weighted)
+        affine_model.load_weights(checkpoint_affine)
+
+        for layer in affine_model.layers:
+            layer.trainable = False
+
+        warped_im_mov_affine, warped_lbl_mov_affine, reg_coarse_layer = affine_model(inputs)
+        template_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(template)
+        moving_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))( moving)
+        inputs_deformable = tf.concat([template_reshaped, moving_reshaped], axis=-1)
+
+        # Encoder fine network
+        enc_c1 = self.encoder_block_contract(inputs_deformable, no_filters[1], pool_flag=False, block_name=1)
+        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
+        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
+        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
+        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
+        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
+        #print(affine_model.pop())
+        # Define the layers to extract
+        # layer_names = [
+        #     "enc_act2_16",
+        #     "enc_act2_15",
+        #     "enc_act2_14",
+        #     "enc_act2_13",
+        #     "enc_act2_12",
+        #     "enc_act2_11"
+        # ]
+        #
+        # # Get the layer outputs
+        # layer_outputs = [affine_model.get_layer(name=name).output for name in layer_names]
+        #
+        # # Create a new model with the same inputs but multiple outputs
+        # extractor_model = Model(inputs=affine_model.input, outputs=layer_outputs)
+        #
+        # # Run the model on input data
+        # enc_c6, enc_c5, enc_c4, enc_c3, enc_c2, enc_c1 = extractor_model(inputs)
+
+        ###################################
+        # Decoder network - Upsampling Path
+        ###################################
+        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
+        dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
+        dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
+        dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
+        dec_c1 = self.decoder_block_expand(dec_c2, no_filters[1], enc_c1, block_name=1)
+
+        model_op = Conv2D(16, 3, padding='same', kernel_initializer=self.kernel_init)(dec_c1)
+        reg_op2 = Activation('relu')(model_op)
+        flo_forward = Conv2D(2, 1, name='pred_flow', padding='same', use_bias=False,
+                             kernel_initializer=self.kernel_init)(reg_op2)
+        #flo_forward = Lambda(lambda x: x[0] + x[1])([flo_forward, reg_coarse_layer])
+
+        flo_backward = flowinverse(flo_forward)
+        # print('flo_forward', flo_forward.shape)
+        warped_im_mov_deformable = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                      shift_center=False, name='pred_fix_deformable_batch')(
+            (warped_im_mov_affine, flo_forward))
+        # print('warped_im_mov_deformable', warped_im_mov_deformable.shape)
         warped_lbl_mov = SpatialTransformer(interp_method='nearest', fill_value=0,
                                             shape=(self.img_size_x, self.img_size_y), shift_center=False,
-                                            name='stn_mov_lbl')((lbl_mov, reg_coarse_layer))
+                                            name='pred_fix_lbl_group')((warped_lbl_mov_affine, flo_forward))
+        # print('warped_lbl_mov', warped_lbl_mov.shape)
+        inverse_warped_moving = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                   shift_center=False, name='pred_mov_diffeo')(
+            [warped_im_mov_deformable, flo_backward])
+        # print('inverse_warped_moving', inverse_warped_moving.shape)
+        resduce = Lambda(lambda x: x[0] - x[1], name='diffeo')([warped_im_mov_affine, inverse_warped_moving])
 
-        model = Model(inputs=[im_fix, im_mov, lbl_mov], outputs=[warped_moving, warped_lbl_mov])
+        if test_mode:
+            flo_forward = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, 2)),
+                                 name='pred_flow_reshaped')(flo_forward)
+
+        warped_im_mov_deformable = Lambda(
+            lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels)),
+            name='pred_fix_deformable')(warped_im_mov_deformable)
+        warped_lbl_mov = Lambda(
+            lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes)),
+            name='pred_fix_lbl')(warped_lbl_mov)
+
+
+
+        if weighted and not test_mode:
+            warped_im_mov_deformable = Lambda(lambda x: x[0] * x[1], name='weighted_deformable')(
+                [warped_im_mov_deformable, weights])
+            weights_reshaped = Lambda(
+                lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]),
+                name='weights_reshaped')([weights])
+            resduce = Lambda(lambda x: x[0] * x[1], name='weighted_res')([resduce, weights_reshaped])
+            flo_forward = Lambda(lambda x: x[0] * x[1], name='weighted_flo')([flo_forward, weights_reshaped])
+
+        model = Model(inputs=inputs,
+                      outputs=[warped_im_mov_deformable, warped_lbl_mov, flo_forward, resduce])  # pred_fix_affine
 
         return model
 
 
-    def affine_lbl_net(self):
+    def reg_groupwise_affine_nonrigid_no_ckpt(self, test_mode=False, weighted=False):
+        ## PCA training
         no_filters = self.no_filters
-        im_fix = Input((self.img_size_x, self.img_size_y, self.num_channels))  # fixed
-        im_mov = Input((self.img_size_x, self.img_size_y, self.num_channels))  # moving
-        lbl_mov = Input((self.img_size_x, self.img_size_y, self.num_channels))
-        inputs_1 = tf.concat([im_fix, im_mov], axis=3)
+        template = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels),
+                         name='template_deformable')  # moving
+        moving = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels),
+                       name='moving_deformable')  # moving
+        moving_lbl = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes), name='moving_lbl_deformable')
+        if weighted:
+            weights = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='weights_deformable')
+            inputs = [template, moving, moving_lbl, weights]
+        else:
+            inputs = [template, moving, moving_lbl]
 
-        enc_c11 = self.encoder_block_contract(inputs_1, no_filters[1], pool_flag=False, block_name=11)
-        enc_c12 = self.encoder_block_contract(enc_c11, no_filters[2], block_name=12)
-        enc_c13 = self.encoder_block_contract(enc_c12, no_filters[3], block_name=13)
-        enc_c14 = self.encoder_block_contract(enc_c13, no_filters[4], block_name=14)
-        enc_c15 = self.encoder_block_contract(enc_c14, no_filters[5], block_name=15)
-        enc_c16 = self.encoder_block_contract(enc_c15, no_filters[5], block_name=16)
-        reg_coarse_layer = Conv2D(32, 1, name='reg_coarse_layer', padding='same',
-                                  use_bias=True,
-                                  kernel_initializer=self.kernel_init)(enc_c16)
-        reg_coarse_layer = MaxPooling2D((2, 2))(reg_coarse_layer)
-        reg_coarse_layer = tf.keras.layers.Flatten()(reg_coarse_layer)
-        reg_coarse_layer = tf.keras.layers.Dense(16, name="fc_1", activation=Activation('relu'))(reg_coarse_layer)
-        reg_coarse_layer = tf.keras.layers.Dense(6, name="fc_2")(reg_coarse_layer)
-        reg_coarse_layer = tf.keras.layers.Reshape((2, 3))(reg_coarse_layer)
-        reg_coarse_layer = AffineToDenseShift((self.img_size_x, self.img_size_y), shift_center=False)(reg_coarse_layer)
-        warped_im_mov = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False, name='stn_mov_im')((im_mov, reg_coarse_layer))
-        warped_lbl_mov = SpatialTransformer(interp_method='nearest',fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False,
-                                           name='stn_mov_lbl')((lbl_mov, reg_coarse_layer))
-        model = Model(inputs=[im_fix, im_mov, lbl_mov], outputs=[warped_im_mov, warped_lbl_mov])
+        #affine_model = self.reg_groupwise_affine(weighted=weighted)
+        #affine_model.load_weights(checkpoint_affine)
+
+        #for layer in affine_model.layers:
+        #    layer.trainable = False
+
+        #warped_im_mov_affine, warped_lbl_mov_affine, reg_coarse_layer = affine_model(inputs)
+        template_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(template)
+        moving_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))(moving)
+        lbl_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_classes]))(moving_lbl)
+
+        inputs_deformable = tf.concat([template_reshaped, moving_reshaped], axis=-1)
+
+        # Encoder fine network
+        enc_c1 = self.encoder_block_contract(inputs_deformable, no_filters[1], pool_flag=False, block_name=1)
+        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
+        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
+        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
+        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
+        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
+        #print(affine_model.pop())
+        # Define the layers to extract
+        # layer_names = [
+        #     "enc_act2_16",
+        #     "enc_act2_15",
+        #     "enc_act2_14",
+        #     "enc_act2_13",
+        #     "enc_act2_12",
+        #     "enc_act2_11"
+        # ]
+        #
+        # # Get the layer outputs
+        # layer_outputs = [affine_model.get_layer(name=name).output for name in layer_names]
+        #
+        # # Create a new model with the same inputs but multiple outputs
+        # extractor_model = Model(inputs=affine_model.input, outputs=layer_outputs)
+        #
+        # # Run the model on input data
+        # enc_c6, enc_c5, enc_c4, enc_c3, enc_c2, enc_c1 = extractor_model(inputs)
+
+        ###################################
+        # Decoder network - Upsampling Path
+        ###################################
+        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
+        dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
+        dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
+        dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
+        dec_c1 = self.decoder_block_expand(dec_c2, no_filters[1], enc_c1, block_name=1)
+
+        model_op = Conv2D(16, 3, padding='same', kernel_initializer=self.kernel_init)(dec_c1)
+        reg_op2 = Activation('relu')(model_op)
+        flo_forward = Conv2D(2, 1, name='pred_flow', padding='same', use_bias=False,
+                             kernel_initializer=self.kernel_init)(reg_op2)
+        #flo_forward = Lambda(lambda x: x[0] + x[1])([flo_forward, reg_coarse_layer])
+
+        flo_backward = flowinverse(flo_forward)
+        # print('flo_forward', flo_forward.shape)
+        warped_im_mov_deformable = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                      shift_center=False, name='pred_fix_deformable_batch')(
+            (moving_reshaped, flo_forward))
+        # print('warped_im_mov_deformable', warped_im_mov_deformable.shape)
+        warped_lbl_mov = SpatialTransformer(interp_method='nearest', fill_value=0,
+                                            shape=(self.img_size_x, self.img_size_y), shift_center=False,
+                                            name='pred_fix_lbl_group')((lbl_reshaped, flo_forward))
+        # print('warped_lbl_mov', warped_lbl_mov.shape)
+        inverse_warped_moving = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),
+                                                   shift_center=False, name='pred_mov_diffeo')(
+            [warped_im_mov_deformable, flo_backward])
+        # print('inverse_warped_moving', inverse_warped_moving.shape)
+        resduce = Lambda(lambda x: x[0] - x[1], name='diffeo')([moving_reshaped, inverse_warped_moving])
+
+        if test_mode:
+            flo_forward = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, 2)),
+                                 name='pred_flow_reshaped')(flo_forward)
+
+        warped_im_mov_deformable = Lambda(
+            lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels)),
+            name='pred_fix_deformable')(warped_im_mov_deformable)
+        warped_lbl_mov = Lambda(
+            lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes)),
+            name='pred_fix_lbl')(warped_lbl_mov)
+
+
+
+        if weighted:
+            warped_im_mov_deformable = Lambda(lambda x: x[0] * x[1], name='weighted_deformable')(
+                [warped_im_mov_deformable, weights])
+            weights_reshaped = Lambda(
+                lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]),
+                name='weights_reshaped')([weights])
+            resduce = Lambda(lambda x: x[0] * x[1], name='weighted_res')([resduce, weights_reshaped])
+            if not test_mode:
+                flo_forward = Lambda(lambda x: x[0] * x[1], name='weighted_flo')([flo_forward, weights_reshaped])
+
+        model = Model(inputs=inputs,
+                      outputs=[warped_im_mov_deformable, warped_lbl_mov, flo_forward, resduce])  # pred_fix_affine
+
+        return model
+
+
+    def reg_groupwise_LR(self, test_mode=False):
+        ## PCA training
+        no_filters = self.no_filters
+        template = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='template')  # template
+        #template = TimeDistributed(Conv2D(filters=1, kernel_size=3, padding='same'))(template_in)
+        # print(template.shape)
+
+        moving = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels), name='moving')  # moving
+        moving_lbl = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes), name='moving_lbl')
+        moving_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels]))( moving)
+        moving_lbl_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_classes]))(moving_lbl)
+
+        #
+        template_L = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x * self.img_size_y)))(template)
+        template_L = Lambda(lambda x: self.low_rank(x))(template_L) # L_pre(nb, nt, nx*ny)
+        template_L = Lambda(lambda x: tf.reshape(x, [-1, self.num_contrasts, self.img_size_x, self.img_size_y]))(template_L)
+
+        moving_transposed = Lambda(lambda x: tf.transpose(x, (0, 1, 4, 2, 3)))(moving)
+        moving_reshaped_pre = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x * self.img_size_y)))(moving_transposed)
+        moving_L = Lambda(lambda x: self.low_rank(x))(moving_reshaped_pre)  # L_pre(nb, nt, nx*ny)
+        moving_L = Lambda(lambda x: tf.reshape(x, [-1, self.num_contrasts, self.img_size_x, self.img_size_y]))( moving_L)
+
+        #print('template_L', template_L.shape, 'moving_L', moving_L.shape)
+        inputs = Lambda(lambda x: tf.stack((x[0], x[1]), -1), name='my_custom_stack')((template_L, moving_L))
+        inputs_reshaped = Lambda(lambda x: tf.reshape(x, [-1, self.img_size_x, self.img_size_y, self.num_channels*2]))(inputs)
+        #print('inputs', inputs_reshaped.shape)
+
+        # Encoder fine network
+        enc_c1 = self.encoder_block_contract(inputs_reshaped, no_filters[1], pool_flag=False, block_name=1)
+        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
+        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
+        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
+        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
+        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
+
+        ###################################
+        # Decoder network - Upsampling Path
+        ###################################
+        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
+        dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
+        dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
+        dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
+        dec_c1 = self.decoder_block_expand(dec_c2, no_filters[1], enc_c1, block_name=1)
+
+        model_op = Conv2D(16, 3, padding='same', kernel_initializer=self.kernel_init)(dec_c1)
+        reg_op2 = Activation('relu')(model_op)
+        flo_forward = Conv2D(2, 1, name='pred_flow',padding='same', use_bias=False, kernel_initializer=self.kernel_init)(reg_op2)
+        flo_backward = flowinverse(flo_forward)
+        #print('flo_forward', flo_forward.shape)
+        warped_im_mov_deformable = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y),shift_center=False, name='pred_fix_deformable_batch')((moving_reshaped, flo_forward))
+        #print('warped_im_mov_deformable', warped_im_mov_deformable.shape)
+        warped_lbl_mov = SpatialTransformer(interp_method='nearest', fill_value=0, shape=(self.img_size_x, self.img_size_y),shift_center=False, name='pred_fix_lbl_group')((moving_lbl_reshaped, flo_forward))
+        #print('warped_lbl_mov', warped_lbl_mov.shape)
+        inverse_warped_moving = SpatialTransformer(fill_value=0, shape=(self.img_size_x, self.img_size_y), shift_center=False, name='pred_mov_diffeo')([warped_im_mov_deformable, flo_backward])
+        #print('inverse_warped_moving', inverse_warped_moving.shape)
+        resduce = Lambda(lambda x: x[0] - x[1], name='diffeo')([moving_reshaped, inverse_warped_moving])
+        if test_mode:
+            flo_forward = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, 2)), name='pred_flow_reshaped')(flo_forward)
+
+        warped_im_mov_deformable = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels)), name='pred_fix_deformable')(warped_im_mov_deformable)
+        warped_lbl_mov = Lambda(lambda x: tf.reshape(x, (-1, self.num_contrasts, self.img_size_x, self.img_size_y, self.num_classes)), name='pred_fix_lbl')(warped_lbl_mov)
+
+        model = Model(inputs=[template, moving, moving_lbl],
+                      outputs=[warped_im_mov_deformable, warped_lbl_mov, flo_forward, resduce]) # pred_fix_affine
+
 
         return model
 
@@ -481,6 +769,7 @@ class SpatialTransformer(Layer):
         # necessary for multi-gpu models
         vol = K.reshape(inputs[0], (-1, *self.imshape))
         trf = K.reshape(inputs[1], (-1, *self.trfshape))
+
 
         # map transform across batch
         if self.single_transform:
@@ -657,7 +946,7 @@ def affine_to_dense_shift(matrix, shape, shift_center=True, warp_right=None):
     if shift_center:
         mesh = (m - 0.5 * (s - 1) for m, s in zip(mesh, shape))
     mesh = [tf.reshape(m, shape=(-1,)) for m in tf.meshgrid(*mesh, indexing='ij')]
-    mesh = tf.stack(mesh)  # N x nb_voxels
+    mesh = tf.stack(mesh, name='inverse')  # N x nb_voxels
     out = mesh
 
     # optionally right-compose with warp field
