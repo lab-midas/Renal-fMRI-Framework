@@ -20,5 +20,3 @@ The learned representations also enable robust image registration across varying
 
     ```bash
     pip install -r requirements.txt
-
-
