@@ -18,7 +18,7 @@ The learned representations also enable robust image registration across varying
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/lab-midas/Renal_fMRI.git
+   git clone https://github.com/lab-midas/Renal-fMRI-Framework.git
 
 2. Install the required dependencies:
 
@@ -31,3 +31,4 @@ This project was developed with the help of the following repository:
 
 - [Constrained Contrastive Learning](https://github.com/lunastra26/multi-contrast-contrastive-learning) – for pre-training contrastive learning technique.  
 - [VoxelMorph](https://github.com/voxelmorph/voxelmorph) – for the motion estimation losses and metrics.
+
