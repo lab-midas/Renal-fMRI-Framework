@@ -1,0 +1,98 @@
+import os
+
+import wandb
+from tensorflow.keras import optimizers
+
+import configs.registration_groupwise as cfg
+from data.train_reg_Data_Generator import DataLoaderGroupwiseTemplate
+from losses.reg_losses import residuce_loss, Grad, dice_loss, MutualInformationVXM
+from models.model_reg_gn import modelObj
+from utils import setup_TF_environment, get_callbacks
+
+
+def main(debug):
+    setup_TF_environment(cfg.gpus_available)
+    if not debug:
+        os.environ["WANDB_API_KEY"] = cfg.wandb_key
+        wandb.init(project="Renfi_registration",
+                   entity=cfg.wandb_entity,
+                   group="groupwise",
+                   name=cfg.experiment_name,
+                   settings=wandb.Settings(start_method='thread'))
+
+    mm_utils = modelObj(cfg)
+    #print('loading checkpoint ', cfg.checkpoint_affine)
+    ae_reg = mm_utils.reg_groupwise_affine_nonrigid_no_ckpt(test_mode=False, weighted=cfg.weighted)  #
+    print(ae_reg.summary())
+
+    ''' Load train data'''
+    train_gen = DataLoaderGroupwiseTemplate(cfg, debug, train_flag=True)
+    val_gen = DataLoaderGroupwiseTemplate(cfg, debug, train_flag=False)
+
+    # non-rigid
+    customLoss = [MutualInformationVXM().loss, #MI_PCA_loss().loss, #
+                  dice_loss().loss,
+                  Grad(penalty='l1').loss,#Smooth2DLoss().loss,
+                  residuce_loss]
+    loss_weights = [0.01, 1, 0.001, 10] #0.273
+
+    AdamOpt = optimizers.Adam(learning_rate=cfg.lr_pretrain, clipvalue=1.0)
+
+    if debug:
+        a = next(iter(train_gen))
+        print('*** in shape', a[0][0].shape)
+        out = ae_reg.predict(a[0])
+        print('*** in shape', a[0][1].shape, '*** out shape', out[0].shape, 'flow shape', out[2].shape)
+
+    if cfg.checkpoint_path:
+        ae_reg.load_weights(cfg.checkpoint_path, by_name=True)
+    ae_reg.compile(optimizer=AdamOpt, loss=customLoss, loss_weights=loss_weights , metrics={'pred_fix_lbl': dice_loss().loss})
+
+    # %% Generate save_dir
+    wts_save_dir = os.path.join(cfg.base_save_dir, 'groupwise', f'{cfg.experiment_name}')
+    if debug:
+        print('logs will be saved in ', wts_save_dir)
+    else:
+        os.makedirs(wts_save_dir, exist_ok=True)
+        print('Creating ', wts_save_dir)
+        csvPath = wts_save_dir + 'training.log'
+
+    # %% Create callbacks
+    callbacks = [] if debug else get_callbacks(csvPath, wts_save_dir)
+
+    # %% Train the model
+    ae_reg.fit(train_gen,
+               validation_data=val_gen,
+               epochs=cfg.num_epochs,
+               steps_per_epoch=1000,
+               validation_steps=200,
+               verbose=1,
+               workers=6,
+               callbacks=callbacks,
+               initial_epoch=cfg.initial_epoch,
+               use_multiprocessing=False)
+
+    # Save final weights
+    ae_reg.save_weights(
+        wts_save_dir + '_weights_' + str(cfg.num_epochs) + '.hdf5',
+        overwrite=True,
+        save_format='h5',
+        options=None)
+    #
+    ## %% Save the configuration for the run
+    cfg_txt_name = wts_save_dir + '_finetune_config_params.txt'
+    with open(cfg_txt_name, 'w') as f:
+        for name, value in cfg.__dict__.items():
+            f.write('{} = {!r}\n'.format(name, value))
+
+    wandb.finish()
+
+
+if __name__ == '__main__':
+    debug = False
+    if debug:
+        os.environ['CUDA_VISIBLE_DEVICES'] = "2"
+    #find_weights()
+    main(debug)
+
+# epoch 4: 0.1779
