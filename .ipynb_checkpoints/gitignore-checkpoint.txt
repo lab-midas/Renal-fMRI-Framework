@@ -1,0 +1,10 @@
+configs
+notebooks
+paper_figures
+wandb
+.git
+__pycache__
+*/__pycache__/
+**/__pycache__/
+***/__pycache__/
+*/.ipynb_checkpoints
