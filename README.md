@@ -12,8 +12,9 @@
 This repository contains the official implementation of the methods described in:
 "Fully Automated Deep Learning-Driven Postprocessing Pipeline for Multiparametric Renal MRI"
 
-Magnetic Resonance in Medicine, 2026
-DOI: [10.1002/mrm.70288](https://10.1002/mrm.70288)
+Magnetic Resonance in Medicine (MRM), 2026
+
+DOI: [10.1002/mrm.70288](https://doi.org/10.1002/mrm.70288)
 
 ---
 
