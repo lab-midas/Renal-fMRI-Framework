@@ -85,7 +85,7 @@ class modelObj:
         ###################################
         # Decoder network - Upsampling Path
         ###################################
-        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)        
+        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
         dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
         dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
         dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
@@ -237,7 +237,7 @@ class modelObj:
 
         return model
 
-    def reg_groupwise_affine_nonrigid(self, checkpoint_affine, test_mode=False, weighted=False):
+    def reg_groupwise_affine_nonrigid(self, checkpoint_affine=False, test_mode=False, weighted=False):
         ## PCA training
         no_filters = self.no_filters
         template = Input((self.num_contrasts, self.img_size_x, self.img_size_y, self.num_channels),
@@ -252,7 +252,8 @@ class modelObj:
             inputs = [template, moving, moving_lbl]
 
         affine_model = self.reg_groupwise_affine(weighted=weighted)
-        affine_model.load_weights(checkpoint_affine)
+        if checkpoint_affine:
+            affine_model.load_weights(checkpoint_affine)
 
         for layer in affine_model.layers:
             layer.trainable = False

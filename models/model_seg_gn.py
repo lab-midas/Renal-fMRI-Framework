@@ -225,36 +225,3 @@ class modelObj:
         seg_fin_layer = Softmax()(seg_op)
         model = Model(inputs=[inputs], outputs=[seg_fin_layer])
         return model
-
-
-    def reg_unet(self):
-        no_filters = self.no_filters
-        inputs = Input((self.img_size_x, self.img_size_y, self.num_channels*2))
-
-        ###################################
-        # Encoder network
-        ###################################
-        enc_c0 = Conv2D(self.num_channels,3,padding='same', kernel_initializer=self.kernel_init)(inputs)
-        enc_c1 = self.encoder_block_contract(enc_c0, no_filters[1], pool_flag=False, block_name=1)
-        enc_c2 = self.encoder_block_contract(enc_c1, no_filters[2], block_name=2)
-        enc_c3 = self.encoder_block_contract(enc_c2, no_filters[3], block_name=3)
-        enc_c4 = self.encoder_block_contract(enc_c3, no_filters[4], block_name=4)
-        enc_c5 = self.encoder_block_contract(enc_c4, no_filters[5], block_name=5)
-        enc_c6 = self.encoder_block_contract(enc_c5, no_filters[5], block_name=6)
-
-        ###################################
-        # Decoder network - Upsampling Path
-        ###################################
-        dec_c5 = self.decoder_block_expand(enc_c6, no_filters[5], enc_c5, block_name=5)
-        dec_c4 = self.decoder_block_expand(dec_c5, no_filters[4], enc_c4, block_name=4)
-        dec_c3 = self.decoder_block_expand(dec_c4, no_filters[3], enc_c3, block_name=3)
-        dec_c2 = self.decoder_block_expand(dec_c3, no_filters[2], enc_c2, block_name=2)
-        dec_c1 = self.decoder_block_expand(dec_c2, no_filters[1], enc_c1, block_name=1)
-
-        model_op = Conv2D(16, 3, padding='same', kernel_initializer=self.kernel_init)(dec_c1)
-        seg_op2 = Activation('relu')(model_op)
-        seg_fin_layer = Conv2D(2, 1, name='reg_layer', padding='same', use_bias=False,
-                        kernel_initializer=self.kernel_init)(seg_op2)
-        model = Model(inputs=[inputs], outputs=[seg_fin_layer])
-        return model
-    

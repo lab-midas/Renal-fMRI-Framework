@@ -1,9 +1,10 @@
 """
-Configuration file for contrastive learning pre-training.
+Configuration file for non-rigid (deformable) registration.
 All hyperparameters and settings are centralized here.
 """
 
 import os
+from pathlib import Path
 
 # =============================================================================
 # GPU SETTINGS
@@ -20,7 +21,6 @@ img_size_y = 256
 
 # Dataset settings
 dataset = 'renfi'  # Dataset name
-contrast = ['BOLD']  # MRI contrast(s) to use for pre-training
 num_channels = 1  # Number of image channels
 zmean = True  # Whether to use zero-mean normalization
 
@@ -28,75 +28,78 @@ zmean = True  # Whether to use zero-mean normalization
 # TRAINING PARAMETERS
 # =============================================================================
 batch_size = 8  # Batch size for training
-lr_pretrain = 1e-3  # Learning rate for pre-training
-latent_dim = 64  # Dimension of latent representation space
+lr_pretrain = 1e-4  # Learning rate for registration
 initial_epoch = 0  # Starting epoch (for resuming training)
-num_epochs = 250  # Total number of training epochs
-
-# Model architecture options
-partial_decoder = 0  # Use partial decoder (0=full, 1=partial)
-warm_start = 0  # Warm start from previous checkpoint
+num_epochs = 500  # Total number of training epochs
+num_classes = 1  # Number of classes for segmentation masks
 
 # =============================================================================
-# LOSS FUNCTION PARAMETERS
+# LOSS PARAMETERS
 # =============================================================================
-temperature = 0.1  # Temperature parameter for contrastive loss
-patch_size = 4  # Size of patches for patch-wise loss
-topk = 100  # Number of top-k patches to consider
-num_samples_loss_eval = 20  # Number of samples for loss evaluation
-
-# Contrastive loss type:
-#   1: Setwise loss (compares sets of patches)
-#   2: Pairwise loss (compares pairs of patches) - RECOMMENDED
-contrastive_loss_type = 2
-
-# Sampling options
-use_mask_sampling = 1  # Use mask-based sampling (1=yes, 0=no)
-ft_param = False  # Whether to use fine-tuning parameters
+ft_training = True  # Fine-tuning mode
 
 # =============================================================================
 # PATH CONFIGURATION
 # =============================================================================
 # Get user's home directory for default paths
-home_dir = "/add/path/to/your/project"
+home_dir = "/home/dir"  # todo: Update with your home directory
 
-# Base directory for saving checkpoints
-base_save_dir = f'{home_dir}/Renal_fMRI/checkpoints/pretrain'
-
-# Data directory containing constraint maps
-data_dir = f'{home_dir}/Renal_fMRI/data/Constraint_maps/param'
+# Data directory containing groupwise HDF5 files
+data_dir = f'{home_dir}/Renal_fMRI/data/groupwise_all'
 
 # Subject split files (from cross-validation)
 val_sub = f'{home_dir}/Renal_fMRI/data/folds/test_f1.npy'  # Validation subjects
 train_sub = f'{home_dir}/Renal_fMRI/data/folds/train_f1.npy'  # Training subjects
 
+# Output labels flag
+out_labels = True
+
 # Optional: Path to pre-trained checkpoint for resuming training
 checkpoint_path = False  # Set to file path string to resume, e.g., '/path/to/checkpoint.h5'
 
 # =============================================================================
-# EXPERIMENT NAMING
+# EXPERIMENT PARAMETERS
 # =============================================================================
-# Generate experiment name based on contrast(s)
-if len(contrast) > 1:
-    name_experiment = "_".join(contrast)
-else:
-    name_experiment = contrast[0]
+# Template contrast (fixed image)
+contrast_template = ['DIXON']
 
-# Full experiment name with parameters
-experiment_name = f"{name_experiment}_bs{batch_size}_lr{lr_pretrain}_dim{latent_dim}"
+# Moving contrasts (images to be registered to template)
+contrast_moving = ['DIXON', 'T1_mapping_VIBE', 'T1_mapping_fl2d', 'BOLD', 'ASL', 'Diffusion']
+
+# Experiment name
+experiment_name = "MI_weighted_nonrigid_with_affine_all"
+
+# Feature extraction options
+out_features = False
+clip = False
+weighted = True
+pca_template = False
+affine = False  # False for non-rigid registration
+
+# Path to pre-trained affine model (used as initialization for non-rigid)
+checkpoint_affine = f'{home_dir}/Renal_fMRI/logs_paper/registration_to_dixon/groupwise/affine_PCA_sm_l1_2d_weighted/checkpoints/model_epoch_0500.h5'
+
+# Number of moving contrasts
+num_contrasts = len(contrast_moving)
+
+# Mask type for region weighting
+type_mask = 'bbox'  # 'bbox' for bounding box, 'distance' for distance transform
+
+# Base directory for saving results
+base_save_dir = f'{home_dir}/Renal_fMRI/logs_paper/registration_to_dixon'
 
 # =============================================================================
 # WANDB (WEIGHTS & BIASES) CONFIGURATION
 # =============================================================================
-# Optional: Set your WandB API key and entity for experiment tracking
-wandb_key = None  # Set to your API key, e.g., 'your-api-key-here'
-wandb_entity = None  # Set to your WandB username/entity, e.g., 'your-username'
+# Set your WandB API key and entity for experiment tracking
+wandb_key = None  # Replace with your key
+wandb_entity = None  # Replace with your username
 
 # =============================================================================
 # DERIVED PATHS (automatically created from base paths)
 # =============================================================================
 # Full save directory including experiment name
-full_save_dir = os.path.join(base_save_dir, name_experiment, experiment_name)
+full_save_dir = os.path.join(base_save_dir, 'groupwise', experiment_name)
 
 
 # =============================================================================
@@ -114,15 +117,16 @@ def validate_config():
     # Check learning rate
     assert lr_pretrain > 0, "Learning rate must be positive"
 
-    # Check loss parameters
-    assert temperature > 0, "Temperature must be positive"
-    assert patch_size > 0, "Patch size must be positive"
-    assert patch_size <= min(img_size_x, img_size_y), \
-        f"Patch size ({patch_size}) cannot exceed image dimensions ({img_size_x}x{img_size_y})"
+    # Check number of epochs
+    assert num_epochs > 0, "Number of epochs must be positive"
 
-    # Check loss type
-    assert contrastive_loss_type in [1, 2], \
-        f"contrastive_loss_type must be 1 (setwise) or 2 (pairwise), got {contrastive_loss_type}"
+    # Check contrasts
+    assert len(contrast_template) > 0, "At least one template contrast must be specified"
+    assert len(contrast_moving) > 0, "At least one moving contrast must be specified"
+
+    # Check affine checkpoint exists (if using)
+    if checkpoint_affine and not os.path.exists(checkpoint_affine):
+        print(f"⚠ Warning: Affine checkpoint not found at: {checkpoint_affine}")
 
     print("✓ Configuration validation passed")
     return True
@@ -135,46 +139,54 @@ def print_config_summary():
     """Print a formatted summary of the configuration."""
 
     print("\n" + "=" * 60)
-    print("CONSTRAINED CONTRASTIVE LEARNING CONFIGURATION")
+    print("NON-RIGID REGISTRATION CONFIGURATION")
     print("=" * 60)
 
     print("\n DATA PARAMETERS:")
-    print(f"  • Contrast(s): {contrast}")
     print(f"  • Image size: {img_size_x} x {img_size_y}")
     print(f"  • Dataset: {dataset}")
     print(f"  • Channels: {num_channels}")
 
-    print("\n️ TRAINING PARAMETERS:")
+    print("\n CONTRASTS:")
+    print(f"  • Template (fixed): {contrast_template}")
+    print(f"  • Moving: {contrast_moving}")
+    print(f"  • Number of moving contrasts: {num_contrasts}")
+
+    print("\n TRAINING PARAMETERS:")
     print(f"  • Batch size: {batch_size}")
     print(f"  • Learning rate: {lr_pretrain}")
-    print(f"  • Latent dimension: {latent_dim}")
     print(f"  • Epochs: {num_epochs}")
 
-    print("\n LOSS PARAMETERS:")
-    print(f"  • Temperature: {temperature}")
-    print(f"  • Patch size: {patch_size}")
-    print(f"  • Loss type: {'Pairwise' if contrastive_loss_type == 2 else 'Setwise'}")
-    print(f"  • Mask sampling: {'Yes' if use_mask_sampling else 'No'}")
+    print("\n REGISTRATION OPTIONS:")
+    print(f"  • Weighted: {weighted}")
+    print(f"  • Affine: {affine} (False = non-rigid)")
+    print(f"  • Mask type: {type_mask}")
+    print(f"  • PCA template: {pca_template}")
+    print(f"  • Using affine pre-training: {checkpoint_affine is not None}")
 
     print("\n PATHS:")
     print(f"  • Data directory: {data_dir}")
     print(f"  • Save directory: {full_save_dir}")
     print(f"  • Training subjects: {train_sub}")
     print(f"  • Validation subjects: {val_sub}")
+    print(f"  • Affine checkpoint: {checkpoint_affine}")
+
+    print("\n EXPERIMENT:")
+    print(f"  • Experiment name: {experiment_name}")
 
     print("\n" + "=" * 60 + "\n")
 
 
 # =============================================================================
-# CONVENIENCE FUNCTIONS FOR DIFFERENT CONTRASTS
+# CONVENIENCE FUNCTIONS FOR DIFFERENT CONFIGURATIONS
 # =============================================================================
 
-def get_config_for_contrast(contrast_name: str, custom_params: dict = None):
+def get_config_for_template(template_name: str, custom_params: dict = None):
     """
-    Get configuration for a specific contrast with optional custom parameters.
+    Get configuration for a specific template contrast.
 
     Args:
-        contrast_name: Name of contrast ('BOLD', 'T2_mapping_PREP', etc.)
+        template_name: Template contrast name
         custom_params: Dictionary of parameters to override
 
     Returns:
@@ -184,15 +196,10 @@ def get_config_for_contrast(contrast_name: str, custom_params: dict = None):
     import copy
     config = copy.deepcopy(globals())
 
-    # Update contrast
-    config['contrast'] = [contrast_name]
-
-    # Update experiment name
-    config['name_experiment'] = contrast_name
-    config['experiment_name'] = f"{contrast_name}_bs{batch_size}_lr{lr_pretrain}_dim{latent_dim}"
-
-    # Update save path
-    config['full_save_dir'] = os.path.join(base_save_dir, contrast_name, config['experiment_name'])
+    # Update template
+    config['contrast_template'] = [template_name]
+    config['experiment_name'] = f"nonrigid_template_{template_name}"
+    config['full_save_dir'] = os.path.join(config['base_save_dir'], 'groupwise', config['experiment_name'])
 
     # Apply custom parameters if provided
     if custom_params:
@@ -203,35 +210,48 @@ def get_config_for_contrast(contrast_name: str, custom_params: dict = None):
     return config
 
 
+def get_config_without_affine_init(custom_params: dict = None):
+    """Get configuration without affine pre-training."""
+    config = get_config_for_template(contrast_template[0], custom_params)
+    config['checkpoint_affine'] = None
+    config['experiment_name'] = config['experiment_name'].replace('with_affine', 'no_affine')
+    config['full_save_dir'] = os.path.join(config['base_save_dir'], 'groupwise', config['experiment_name'])
+    return config
+
+
 # =============================================================================
 # PREDEFINED CONFIGURATIONS
 # =============================================================================
 
-# Configuration for BOLD (T2*) contrast
-BOLD_CONFIG = {
-    'contrast': ['BOLD'],
-    'num_channels': 1,
+# Configuration with affine initialization
+AFFINE_INIT_CONFIG = {
+    'contrast_template': ['DIXON'],
+    'contrast_moving': ['DIXON', 'T1_mapping_VIBE', 'T1_mapping_fl2d', 'BOLD', 'ASL', 'Diffusion'],
     'batch_size': 8,
-    'num_epochs': 250,
-    'experiment_name': f"BOLD_bs8_lr1e-3_dim64"
+    'num_epochs': 500,
+    'weighted': True,
+    'checkpoint_affine': checkpoint_affine,
+    'experiment_name': 'nonrigid_with_affine_init'
 }
 
-# Configuration for T2 mapping
-T2_CONFIG = {
-    'contrast': ['T2_mapping_PREP'],
-    'num_channels': 2,  # T2 map + T2 prep
-    'batch_size': 6,  # Smaller due to more channels
-    'num_epochs': 200,
-    'experiment_name': f"T2_bs6_lr1e-3_dim64"
+# Configuration without affine initialization
+NO_AFFINE_CONFIG = {
+    'contrast_template': ['DIXON'],
+    'contrast_moving': ['DIXON', 'T1_mapping_VIBE', 'T1_mapping_fl2d', 'BOLD', 'ASL', 'Diffusion'],
+    'batch_size': 8,
+    'num_epochs': 500,
+    'weighted': True,
+    'checkpoint_affine': None,
+    'experiment_name': 'nonrigid_no_affine_init'
 }
 
-# Configuration for multiple contrasts
-MULTI_CONFIG = {
-    'contrast': ['BOLD', 'T2_mapping_PREP'],
-    'num_channels': 3,  # Combined
-    'batch_size': 4,  # Smaller batch size for multiple contrasts
-    'num_epochs': 150,
-    'experiment_name': f"MULTI_bs4_lr1e-3_dim64"
+# Configuration with different loss weights
+DIFFERENT_LOSS_CONFIG = {
+    'loss_weights_mi': 0.1,
+    'loss_weights_dice': 1,
+    'loss_weights_smooth': 0.01,
+    'loss_weights_residual': 5,
+    'experiment_name': 'nonrigid_diff_loss_weights'
 }
 
 # =============================================================================
