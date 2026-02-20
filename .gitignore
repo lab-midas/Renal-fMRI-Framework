@@ -8,6 +8,7 @@ __pycache__
 **/__pycache__
 ***/__pycache__
 */.ipynb_checkpoints
+scripts/results
 .ipynb_checkpoints
-scripts/inference_results
 scripts/registration_results
+mlflow_inference
